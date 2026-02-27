@@ -1,8 +1,7 @@
 import re
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List, Tuple
-from typing import Dict, List, Tuple, Optional
+from typing import List, Dict, Tuple, Optional
 
 import pandas as pd
 import streamlit as st
@@ -10,577 +9,278 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Cross-Qualifying Ticker Finder", layout="wide")
 
-# -----------------------------
-# Helpers
-# Constants / Matching
-# -----------------------------
-META_COLS_DEFAULT = ["Symbol", "Exchange", "Compagny", "Sector", "Rank"]
+# ============================================================
+# CONSTANTS
+# ============================================================
+
+META_COLS_DEFAULT = ["Symbol", "Exchange", "Company", "Sector", "Rank"]
 KNOWN_SUFFIXES = (".TO", ".V", ".CN", ".NE", ".TSX", ".TSXV")
-@@ -22,30 +23,34 @@ def normalize_ticker(raw: str) -> str:
-if not s:
-return ""
 
-    # If they paste something like "XTSE:BTO" -> "BTO"
-    # "XTSE:BTO" -> "BTO"
-if ":" in s:
-s = s.split(":")[-1].strip()
+# ============================================================
+# HELPERS
+# ============================================================
 
-    # If they paste something like "BTO.TO" -> "BTO"
-    # "BTO.TO" -> "BTO"
-for suf in KNOWN_SUFFIXES:
-if s.endswith(suf):
-s = s[: -len(suf)]
-break
+def normalize_ticker(raw: str) -> str:
+    if not raw:
+        return ""
+    s = str(raw).strip().upper()
 
-    # Remove obvious whitespace and stray commas
-    # Remove whitespace/commas
-s = re.sub(r"[,\s]+", "", s)
+    if ":" in s:
+        s = s.split(":")[-1]
 
-return s
+    for suf in KNOWN_SUFFIXES:
+        if s.endswith(suf):
+            s = s[:-len(suf)]
+            break
 
-# -----------------------------
-# Loaders
-# -----------------------------
+    s = re.sub(r"[,\s]+", "", s)
+    return s
+
+
 @st.cache_data(show_spinner=False)
-def load_table_from_upload(uploaded_file) -> pd.DataFrame:
+def load_table(uploaded_file):
     name = uploaded_file.name.lower()
-    if name.endswith(".xlsx") or name.endswith(".xls"):
+    if name.endswith(("xlsx", "xls")):
         return pd.read_excel(uploaded_file)
     return pd.read_csv(uploaded_file)
 
+
 @st.cache_data(show_spinner=False)
-def load_base(base_path: str, uploaded_file=None) -> pd.DataFrame:
-    """Load base dataset from bundled file path or an uploaded file."""
-if uploaded_file is not None:
-        name = uploaded_file.name.lower()
-        if name.endswith(".xlsx") or name.endswith(".xls"):
-            return pd.read_excel(uploaded_file)
-        else:
-            return pd.read_csv(uploaded_file)
-        return load_table_from_upload(uploaded_file)
+def load_base(base_path: str, uploaded=None):
+    if uploaded is not None:
+        return load_table(uploaded)
 
-p = Path(base_path)
-if not p.exists():
-@@ -55,30 +60,34 @@ def load_base(base_path: str, uploaded_file=None) -> pd.DataFrame:
-return pd.read_excel(p)
-return pd.read_csv(p)
+    p = Path(base_path)
+    if not p.exists():
+        st.error(f"Base file not found at: {base_path}")
+        st.stop()
 
-def get_qualifier_cols(df: pd.DataFrame, meta_cols: List[str]) -> List[str]:
-    return [c for c in df.columns if c not in meta_cols]
+    if p.suffix in [".xlsx", ".xls"]:
+        return pd.read_excel(p)
+    return pd.read_csv(p)
 
-def build_symbol_index(df: pd.DataFrame) -> pd.DataFrame:
-    """Add helper columns for matching."""
-    """Add helper keys for matching."""
-out = df.copy()
-    if "Symbol" in out.columns:
-        out["__ticker_key__"] = out["Symbol"].astype(str).apply(normalize_ticker)
-        out["__symbol_key__"] = out["Symbol"].astype(str).str.strip().str.upper()
-    else:
-        # Fallback if the base file has no 'Symbol' column
-        first_col = out.columns[0]
-        out["__ticker_key__"] = out[first_col].astype(str).apply(normalize_ticker)
-        out["__symbol_key__"] = out[first_col].astype(str).str.strip().str.upper()
-    symbol_col = "Symbol" if "Symbol" in out.columns else out.columns[0]
-    out["__ticker_key__"] = out[symbol_col].astype(str).apply(normalize_ticker)
-    out["__symbol_key__"] = out[symbol_col].astype(str).str.strip().str.upper()
-return out
 
 def infer_meta_cols(df: pd.DataFrame) -> List[str]:
     meta = [c for c in META_COLS_DEFAULT if c in df.columns]
-    # Ensure Symbol appears first if present
     if "Symbol" in df.columns and "Symbol" not in meta:
-        meta = ["Symbol"] + meta
+        meta.insert(0, "Symbol")
     return meta
+
 
 def get_qualifier_cols(df: pd.DataFrame, meta_cols: List[str]) -> List[str]:
     ignore = set(meta_cols + ["__ticker_key__", "__symbol_key__"])
     return [c for c in df.columns if c not in ignore]
 
-# -----------------------------
-# Parsing inputs
-# -----------------------------
-def parse_manual_tickers(text: str) -> List[str]:
-if not text:
-return []
-    # Split by commas/newlines/semicolons/spaces
-parts = re.split(r"[\n,; \t]+", text)
-keys = [normalize_ticker(p) for p in parts]
-keys = [k for k in keys if k]
-    # de-dupe preserving order
-seen = set()
-out = []
-for k in keys:
-@@ -87,21 +96,29 @@ def parse_manual_tickers(text: str) -> List[str]:
-out.append(k)
-return out
 
-def infer_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    cols_lower = {str(c).strip().lower(): c for c in df.columns}
-    for cand in candidates:
-        if cand in cols_lower:
-            return cols_lower[cand]
-    # fuzzy contains
-    for c in df.columns:
-        cl = str(c).strip().lower()
-        for cand in candidates:
-            if cand in cl:
-                return c
-    return None
+def build_symbol_index(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    symbol_col = "Symbol" if "Symbol" in df.columns else df.columns[0]
 
-def parse_uploaded_ticker_file(uploaded) -> List[str]:
-if uploaded is None:
-return []
-    name = uploaded.name.lower()
-    if name.endswith(".xlsx") or name.endswith(".xls"):
-        tdf = pd.read_excel(uploaded)
-    else:
-        tdf = pd.read_csv(uploaded)
-
-    tdf = load_table_from_upload(uploaded)
-if tdf.empty:
-return []
-
-    # Prefer a column named like ticker/symbol
-    cand_cols = [c for c in tdf.columns if str(c).strip().lower() in ("ticker", "tickers", "symbol", "symbols")]
-    col = cand_cols[0] if cand_cols else tdf.columns[0]
-    col = infer_column(tdf, ["ticker", "tickers", "symbol", "symbols", "symbole", "symb"])
-    if col is None:
-        col = tdf.columns[0]
-
-keys = tdf[col].dropna().astype(str).tolist()
-keys = [normalize_ticker(x) for x in keys]
-@@ -115,6 +132,9 @@ def parse_uploaded_ticker_file(uploaded) -> List[str]:
-out.append(k)
-return out
-
-# -----------------------------
-# Core matching
-# -----------------------------
-def find_memberships(
-df_indexed: pd.DataFrame,
-ticker_keys: List[str],
-@@ -124,20 +144,17 @@ def find_memberships(
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-"""
-   Returns:
-      - long_results: one row per (input ticker, matched row) with membership list and count
-      - matrix: boolean/value matrix (tickers x qualifiers) aggregated across matches
-      - long_results: one row per input ticker (plus per matched row if duplicates exist)
-      - matrix: numeric/boolean matrix (tickers x qualifiers) aggregated across matches
-   """
-long_rows = []
-    # Build quick lookup
-if match_mode == "Exact Symbol":
-key_col = "__symbol_key__"
-        normalize = lambda x: str(x).strip().upper()
-        wanted = [normalize(k) for k in ticker_keys]  # they likely entered full symbols
-        wanted = [str(k).strip().upper() for k in ticker_keys]
-else:
-key_col = "__ticker_key__"
-wanted = ticker_keys
-
-    # For matrix, we aggregate presence across all matches for that ticker
-matrix_rows: Dict[str, Dict[str, float]] = {}
-
-for input_key in wanted:
-@@ -162,7 +179,6 @@ def find_memberships(
-v = r.get(c, None)
-if pd.notna(v) and str(v).strip() != "":
-memberships.append((c, v))
-                    # Matrix: use 1 for presence, or numeric value if it parses
-try:
-matrix_rows[input_key][c] = max(matrix_rows[input_key].get(c, 0), float(v))
-except Exception:
-@@ -183,25 +199,73 @@ def find_memberships(
-
-long_results = pd.DataFrame(long_rows)
-
-    # Build matrix dataframe
-matrix = pd.DataFrame.from_dict(matrix_rows, orient="index")
-matrix.index.name = "Input"
-matrix = matrix.fillna(0)
-
-return long_results, matrix
-
-def to_excel_bytes(df1: pd.DataFrame, df2: pd.DataFrame) -> bytes:
-    """Create an Excel with auto-fit columns for two sheets."""
-# -----------------------------
-# Portfolio helpers
-# -----------------------------
-def clean_weight_series(s: pd.Series) -> pd.Series:
-    """Parse weights like '4.25' or '4.25%' or 0.0425 into percent."""
-    s2 = s.copy()
-    # Remove percent signs and commas
-    s2 = s2.astype(str).str.replace("%", "", regex=False).str.replace(",", "", regex=False)
-    s2 = pd.to_numeric(s2, errors="coerce")
-    # If mostly <= 1, assume decimals -> convert to %
-    if s2.dropna().empty:
-        return s2
-    frac_share = (s2.dropna() <= 1).mean()
-    if frac_share > 0.7:
-        s2 = s2 * 100.0
-    return s2
-
-def portfolio_column_exposure(found: pd.DataFrame, qualifier_cols: List[str], weight_col: str) -> pd.DataFrame:
-    rows = []
-    for c in qualifier_cols:
-        m = found[c].notna() & (found[c].astype(str).str.strip() != "")
-        rows.append({
-            "Column": c,
-            "Holdings (count)": int(m.sum()),
-            "Weight (%)": float(found.loc[m, weight_col].sum()),
-        })
-    return pd.DataFrame(rows).sort_values("Weight (%)", ascending=False)
-
-def portfolio_sector_exposure(found: pd.DataFrame, weight_col: str) -> pd.DataFrame:
-    if "Sector" not in found.columns:
-        return pd.DataFrame(columns=["Sector", "Holdings", "Weight (%)"])
-    out = (
-        found.groupby("Sector", dropna=False)
-        .agg(Holdings=("Input", "count"), **{"Weight (%)": (weight_col, "sum")})
-        .sort_values("Weight (%)", ascending=False)
-        .reset_index()
-    )
+    out["__ticker_key__"] = out[symbol_col].astype(str).apply(normalize_ticker)
+    out["__symbol_key__"] = out[symbol_col].astype(str).str.strip().str.upper()
     return out
 
-# -----------------------------
-# Exports
-# -----------------------------
-def to_excel_bytes(
-    results_df: pd.DataFrame,
-    matrix_df: pd.DataFrame,
-    extra_sheets: Optional[Dict[str, pd.DataFrame]] = None,
-) -> bytes:
-import openpyxl
-from openpyxl.utils import get_column_letter
 
-bio = BytesIO()
-with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-        df1.to_excel(writer, index=False, sheet_name="Results")
-        df2.to_excel(writer, index=True, sheet_name="Matrix")
+def parse_manual_tickers(text: str) -> List[str]:
+    if not text:
+        return []
+    parts = re.split(r"[\n,; \t]+", text)
+    keys = [normalize_ticker(p) for p in parts if p]
+    return list(dict.fromkeys(keys))
+
+
+def clean_weight_series(s: pd.Series) -> pd.Series:
+    s2 = s.astype(str).str.replace("%", "", regex=False).str.replace(",", "", regex=False)
+    s2 = pd.to_numeric(s2, errors="coerce")
+
+    if not s2.dropna().empty:
+        frac = (s2.dropna() <= 1).mean()
+        if frac > 0.7:
+            s2 = s2 * 100.0
+    return s2
+
+
+# ============================================================
+# MATCHING ENGINE
+# ============================================================
+
+def find_memberships(
+    df_indexed: pd.DataFrame,
+    ticker_keys: List[str],
+    qualifier_cols: List[str],
+    match_mode: str,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+    long_rows = []
+    matrix_rows: Dict[str, Dict[str, float]] = {}
+
+    if match_mode == "Exact Symbol":
+        key_col = "__symbol_key__"
+        wanted = [k.upper() for k in ticker_keys]
+    else:
+        key_col = "__ticker_key__"
+        wanted = ticker_keys
+
+    for input_key in wanted:
+        matches = df_indexed[df_indexed[key_col] == input_key]
+        found = not matches.empty
+
+        matrix_rows[input_key] = {}
+
+        if found:
+            for _, r in matches.iterrows():
+                memberships = []
+                for c in qualifier_cols:
+                    v = r.get(c, None)
+                    if pd.notna(v) and str(v).strip() != "":
+                        memberships.append(c)
+                        matrix_rows[input_key][c] = 1
+
+                long_rows.append({
+                    "Input": input_key,
+                    "Matched Symbol": r.get("Symbol", ""),
+                    "Found?": True,
+                    "Membership Count": len(memberships),
+                    "Membership Columns": ", ".join(memberships)
+                })
+        else:
+            long_rows.append({
+                "Input": input_key,
+                "Matched Symbol": "",
+                "Found?": False,
+                "Membership Count": 0,
+                "Membership Columns": ""
+            })
+
+    long_df = pd.DataFrame(long_rows)
+    matrix = pd.DataFrame.from_dict(matrix_rows, orient="index").fillna(0)
+    matrix.index.name = "Input"
+
+    return long_df, matrix
+
+
+# ============================================================
+# EXPORT
+# ============================================================
+
+def to_excel_bytes(results_df, matrix_df, extra_sheets=None) -> bytes:
+    bio = BytesIO()
+
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         results_df.to_excel(writer, index=False, sheet_name="Results")
         matrix_df.to_excel(writer, index=True, sheet_name="Matrix")
 
-        # Auto-fit widths
-        for sheet_name in ["Results", "Matrix"]:
         if extra_sheets:
             for name, df in extra_sheets.items():
                 df.to_excel(writer, index=False, sheet_name=name[:31])
 
-        # Auto-fit widths (cap at 60)
-        for sheet_name in writer.book.sheetnames:
-ws = writer.book[sheet_name]
-for col_cells in ws.columns:
-max_len = 0
-@@ -214,34 +278,59 @@ def to_excel_bytes(df1: pd.DataFrame, df2: pd.DataFrame) -> bytes:
+    return bio.getvalue()
 
-return bio.getvalue()
 
-# -----------------------------
-# Charts (matplotlib)
-# -----------------------------
-def chart_pie(values: List[float], labels: List[str], title: str):
-    fig, ax = plt.subplots(figsize=(5.2, 3.6))
-    ax.pie(values, labels=labels, autopct=lambda p: f"{p:.1f}%" if p > 0 else "", startangle=90)
+# ============================================================
+# CHARTS
+# ============================================================
+
+def chart_pie(values, labels, title):
+    fig, ax = plt.subplots(figsize=(5, 4))
+
+    if sum(values) == 0:
+        ax.text(0.5, 0.5, "No Data", ha="center", va="center")
+    else:
+        ax.pie(values, labels=labels, autopct="%1.1f%%", startangle=90)
+
     ax.set_title(title)
     st.pyplot(fig, clear_figure=True)
 
-def chart_barh(df: pd.DataFrame, x_col: str, y_col: str, title: str, top_n: int = 12):
-    d = df.head(top_n).iloc[::-1]  # reverse for horizontal bar
-    fig, ax = plt.subplots(figsize=(7.2, max(3.6, 0.35 * len(d) + 1.2)))
-    ax.barh(d[x_col].astype(str), d[y_col].astype(float))
-    ax.set_title(title)
-    ax.set_xlabel(y_col)
-    st.pyplot(fig, clear_figure=True)
 
-def chart_hist(values: pd.Series, title: str, bins: int = 10, xlabel: str = ""):
-    fig, ax = plt.subplots(figsize=(6.2, 3.6))
-    ax.hist(values.dropna().astype(float), bins=bins)
-    ax.set_title(title)
-    if xlabel:
-        ax.set_xlabel(xlabel)
-    st.pyplot(fig, clear_figure=True)
-
-# -----------------------------
+# ============================================================
 # UI
-# -----------------------------
+# ============================================================
+
 st.title("Cross-Qualifying Ticker Finder")
-st.caption("Paste or upload tickers → see which strategy/qualifier columns they appear in (based on your attached file).")
-st.caption("Cross-reference a ticker list (or a weighted portfolio) to see which columns each ticker belongs to — based on your base file.")
 
 with st.sidebar:
-st.header("1) Base file")
-    st.write("Upload your base Excel/CSV (optional). If you don’t upload, the app will use the bundled file path.")
-    base_upload = st.file_uploader("Upload base file (.csv, .xlsx)", type=["csv", "xlsx", "xls"])
-    st.write("Upload your base Excel/CSV (optional). If you don’t upload, the app uses the bundled file path below.")
-    base_upload = st.file_uploader("Upload base file (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="base_upload")
-base_path = st.text_input("Bundled base path", value="Cross Qualifying Stocks.csv")
+    st.header("Base File")
+    base_upload = st.file_uploader("Upload base file", type=["csv", "xlsx", "xls"])
+    base_path = st.text_input("Or use local path", value="Cross Qualifying Stocks.csv")
 
-st.divider()
+    st.divider()
 
-    st.header("2) Input tickers")
-    manual = st.text_area(
-        "Paste tickers (comma/newline separated)",
-        placeholder="Example:\nBTO\nOTEX\nEFX\nor: XTSE:BTO, XTSE:OTEX",
-        height=140,
-    )
-    tickers_upload = st.file_uploader("…or upload a ticker list (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="tickers_upload")
-    st.header("2) Mode")
-    mode = st.radio("Choose input type", ["Ticker list", "Portfolio (with weights)"], index=0)
+    mode = st.radio("Mode", ["Ticker list", "Portfolio (with weights)"])
 
-st.divider()
+    st.divider()
 
-st.header("3) Options")
-    match_mode = st.radio("Match using", ["Ticker", "Exact Symbol"], index=0, help="Ticker = matches 'BTO' to 'XTSE:BTO'. Exact Symbol expects full symbols like 'XTSE:BTO'.")
-    show_matrix_values = st.toggle("Matrix: show numeric values (when available)", value=True)
-    match_mode = st.radio(
-        "Match using",
-        ["Ticker", "Exact Symbol"],
-        index=0,
-        help="Ticker mode maps 'BTO' to 'XTSE:BTO'. Exact Symbol expects full symbols like 'XTSE:BTO'.",
-    )
-show_only_found = st.toggle("Show only found tickers", value=False)
-    show_matrix_values = st.toggle("Matrix: show numeric values (when available)", value=True)
+    match_mode = st.radio("Match using", ["Ticker", "Exact Symbol"])
+    show_only_found = st.toggle("Show only found tickers", value=False)
 
 # Load base
-try:
-@@ -251,30 +340,70 @@ def to_excel_bytes(df1: pd.DataFrame, df2: pd.DataFrame) -> bytes:
-st.stop()
-
+base_df = load_base(base_path, base_upload)
 base_df = build_symbol_index(base_df)
 
-# Infer meta cols present
-meta_cols = [c for c in META_COLS_DEFAULT if c in base_df.columns]
-if "Symbol" not in meta_cols and "Symbol" in base_df.columns:
-    meta_cols = ["Symbol"] + meta_cols
-
-qualifier_cols = get_qualifier_cols(base_df, meta_cols + ["__ticker_key__", "__symbol_key__"])
-
-# Parse input tickers
-ticker_keys = []
-ticker_keys.extend(parse_manual_tickers(manual))
-ticker_keys.extend(parse_uploaded_ticker_file(tickers_upload))
-
-# De-dupe preserving order
 meta_cols = infer_meta_cols(base_df)
 qualifier_cols = get_qualifier_cols(base_df, meta_cols)
 
-# Input tickers
-ticker_keys: List[str] = []
+ticker_keys = []
 portfolio_df = None
 weight_col = None
 
 if mode == "Ticker list":
-    with st.sidebar:
-        st.header("4) Input tickers")
-        manual = st.text_area(
-            "Paste tickers (comma/newline separated)",
-            placeholder="Example:\nBTO\nOTEX\nEFX\nor: XTSE:BTO, XTSE:OTEX",
-            height=140,
-        )
-        tickers_upload = st.file_uploader("…or upload a ticker list (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="tickers_upload")
-
-    ticker_keys.extend(parse_manual_tickers(manual))
-    ticker_keys.extend(parse_uploaded_ticker_file(tickers_upload))
+    manual = st.text_area("Paste tickers")
+    ticker_keys = parse_manual_tickers(manual)
 
 else:
-    with st.sidebar:
-        st.header("4) Upload portfolio")
-        port_upload = st.file_uploader("Upload portfolio (.csv, .xlsx)", type=["csv", "xlsx", "xls"], key="port_upload")
-        if port_upload is not None:
-            portfolio_df = load_table_from_upload(port_upload)
+    port_upload = st.file_uploader("Upload portfolio", type=["csv", "xlsx", "xls"])
+    if port_upload:
+        portfolio_df = load_table(port_upload)
+        ticker_col = portfolio_df.columns[0]
+        weight_col = portfolio_df.columns[1]
 
-            # Let user pick columns (with smart defaults)
-            ticker_guess = infer_column(portfolio_df, ["ticker", "symbol", "symbole", "ric"])
-            weight_guess = infer_column(portfolio_df, ["weight", "cible", "allocation", "target", "%"])
+        portfolio_df["__ticker_key__"] = portfolio_df[ticker_col].apply(normalize_ticker)
+        portfolio_df["__weight_pct__"] = clean_weight_series(portfolio_df[weight_col])
 
-            ticker_col = st.selectbox(
-                "Ticker column",
-                options=list(portfolio_df.columns),
-                index=(list(portfolio_df.columns).index(ticker_guess) if ticker_guess in list(portfolio_df.columns) else 0),
-            )
-            weight_col = st.selectbox(
-                "Weight column (%)",
-                options=list(portfolio_df.columns),
-                index=(list(portfolio_df.columns).index(weight_guess) if weight_guess in list(portfolio_df.columns) else min(1, len(portfolio_df.columns)-1)),
-                help="Accepts values like 4.25 or 4.25% or 0.0425 (auto-converts).",
-            )
-
-            portfolio_df = portfolio_df.copy()
-            portfolio_df["__ticker_key__"] = portfolio_df[ticker_col].astype(str).apply(normalize_ticker)
-            portfolio_df["__weight_pct__"] = clean_weight_series(portfolio_df[weight_col])
-
-            ticker_keys = portfolio_df["__ticker_key__"].dropna().astype(str).tolist()
-            ticker_keys = [t for t in ticker_keys if t]
-
-# De-dupe tickers preserving order
-seen = set()
-ticker_keys = [t for t in ticker_keys if not (t in seen or seen.add(t))]
-
-# Overview
-col1, col2, col3 = st.columns([1.3, 1, 1])
-
-with col1:
-st.subheader("Base dataset")
-st.write(f"Rows: **{len(base_df):,}** · Qualifier columns: **{len(qualifier_cols)}**")
-with st.expander("Preview base file"):
-        st.dataframe(base_df[[c for c in (meta_cols + qualifier_cols[:8]) if c in base_df.columns]].head(25), use_container_width=True)
-        preview_cols = [c for c in (meta_cols + qualifier_cols[:10]) if c in base_df.columns]
-        st.dataframe(base_df[preview_cols].head(25), use_container_width=True)
-
-with col2:
-st.subheader("Your input")
-@@ -283,15 +412,15 @@ def to_excel_bytes(df1: pd.DataFrame, df2: pd.DataFrame) -> bytes:
-st.code("\n".join(ticker_keys[:30]) + ("\n…" if len(ticker_keys) > 30 else ""))
-
-with col3:
-    st.subheader("Column glossary")
-    st.subheader("How membership works")
-st.write("Any non-empty value in a qualifier column counts as membership.")
-    st.write("Example: a '2' or '7' typically indicates ranking/position within that list.")
-    st.write("If a cell has a number (e.g., 2 or 7), the matrix can display it (or just show 0/1).")
-
-st.divider()
-st.subheader("Results")
+        ticker_keys = portfolio_df["__ticker_key__"].dropna().tolist()
 
 if not ticker_keys:
-    st.info("Add tickers in the sidebar (paste or upload) to see results.")
-    st.info("Add tickers (paste/upload) or upload a portfolio to see results.")
-st.stop()
+    st.info("Add tickers to see results.")
+    st.stop()
+
+# ============================================================
+# RESULTS
+# ============================================================
 
 long_results, matrix = find_memberships(
-@@ -305,14 +434,25 @@ def to_excel_bytes(df1: pd.DataFrame, df2: pd.DataFrame) -> bytes:
+    base_df,
+    ticker_keys,
+    qualifier_cols,
+    match_mode,
+)
+
 if show_only_found:
-long_results = long_results[long_results["Found?"] == True].copy()
+    long_results = long_results[long_results["Found?"]]
 
-# If in portfolio mode, attach weights
-extra_sheets = {}
-if mode == "Portfolio (with weights)" and portfolio_df is not None:
-    # Build weight map
-    wmap = (
-        portfolio_df.dropna(subset=["__ticker_key__"])
-        .groupby("__ticker_key__", as_index=False)["__weight_pct__"]
-        .sum()
-        .rename(columns={"__ticker_key__": "Input", "__weight_pct__": "Weight (%)"})
-    )
-    long_results = long_results.merge(wmap, on="Input", how="left")
+st.subheader("Results")
+st.dataframe(long_results, use_container_width=True)
 
-# Show long results
-st.dataframe(long_results, use_container_width=True, hide_index=True)
+st.subheader("Summary by Column")
+if not matrix.empty:
+    summary = matrix.sum().sort_values(ascending=False).rename("Count")
+    st.dataframe(summary.to_frame(), use_container_width=True)
 
-# Summary
-# Summary counts
+st.subheader("Matrix")
+st.dataframe(matrix, use_container_width=True)
+
+# ============================================================
+# DOWNLOAD
+# ============================================================
+
 st.divider()
-st.subheader("Summary (how many of your tickers appear in each column)")
-
-# For summary counts, treat presence as >0
-presence = (matrix > 0).astype(int)
-summary = presence.sum(axis=0).sort_values(ascending=False).rename("Count").to_frame()
-st.dataframe(summary, use_container_width=True)
-@@ -325,11 +465,105 @@ def to_excel_bytes(df1: pd.DataFrame, df2: pd.DataFrame) -> bytes:
-matrix_view = (matrix_view > 0).astype(int)
-st.dataframe(matrix_view, use_container_width=True)
-
-# -----------------------------
-# Portfolio Insights (charts)
-# -----------------------------
-if mode == "Portfolio (with weights)" and portfolio_df is not None:
-    st.divider()
-    st.header("Portfolio insights (weighted)")
-
-    # Determine mapped/unmapped by merging matrix index to weights
-    weights = (
-        portfolio_df.dropna(subset=["__ticker_key__"])
-        .groupby("__ticker_key__", as_index=False)["__weight_pct__"]
-        .sum()
-        .rename(columns={"__ticker_key__": "Input", "__weight_pct__": "Weight (%)"})
-    )
-
-    mapped_inputs = set(matrix.index.tolist())
-    weights["Mapped?"] = weights["Input"].apply(lambda x: x in mapped_inputs)
-
-    mapped_w = float(weights.loc[weights["Mapped?"], "Weight (%)"].sum())
-    unmapped_w = float(weights.loc[~weights["Mapped?"], "Weight (%)"].sum())
-    total_w = float(weights["Weight (%)"].sum()) if not weights.empty else 0.0
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total weight (%)", f"{total_w:.2f}")
-    m2.metric("Mapped weight (%)", f"{mapped_w:.2f}")
-    m3.metric("Unmapped weight (%)", f"{unmapped_w:.2f}")
-    m4.metric("Coverage (%)", f"{(100*mapped_w/total_w if total_w else 0):.1f}")
-
-    c1, c2 = st.columns([1, 1.2])
-    with c1:
-        chart_pie([mapped_w, unmapped_w], ["Mapped", "Unmapped"], "Coverage by weight")
-    with c2:
-        chart_hist(long_results.loc[long_results["Found?"] == True, "Membership Count"], "Membership Count distribution (mapped holdings)", bins=10, xlabel="Membership Count")
-
-    # Build a 'found' table with meta + weights (one row per input, so merge on Input and choose first match)
-    found_rows = long_results[long_results["Found?"] == True].copy()
-    if "Weight (%)" not in found_rows.columns:
-        found_rows = found_rows.merge(weights[["Input", "Weight (%)"]], on="Input", how="left")
-
-    # Column exposure by weight (mapped portion)
-    # Need base values for each input; use matrix_view (numeric) and weights
-    if not matrix.empty and not weights.empty:
-        mw = matrix.copy()
-        mw = mw.merge(weights.set_index("Input")[["Weight (%)"]], left_index=True, right_index=True, how="left")
-        # For each qualifier, sum weights where membership > 0
-        exp_rows = []
-        for c in matrix.columns:
-            m = mw[c] > 0
-            exp_rows.append({"Column": c, "Weight (%)": float(mw.loc[m, "Weight (%)"].sum()), "Holdings (count)": int(m.sum())})
-        col_exp = pd.DataFrame(exp_rows).sort_values("Weight (%)", ascending=False)
-
-        st.subheader("Top column exposures (by weight, mapped portion)")
-        e1, e2 = st.columns([1.1, 1])
-        with e1:
-            st.dataframe(col_exp, use_container_width=True)
-        with e2:
-            chart_barh(col_exp, "Column", "Weight (%)", "Top columns by weight", top_n=12)
-
-        extra_sheets["Column Exposure"] = col_exp
-
-    # Sector exposure (only for mapped)
-    if "Sector" in found_rows.columns and "Weight (%)" in found_rows.columns:
-        sector_exp = (
-            found_rows.groupby("Sector", dropna=False)
-            .agg(**{"Holdings (count)": ("Input", "nunique"), "Weight (%)": ("Weight (%)", "sum")})
-            .sort_values("Weight (%)", ascending=False)
-            .reset_index()
-        )
-        st.subheader("Sector exposure (mapped portion)")
-        s1, s2 = st.columns([1.1, 1])
-        with s1:
-            st.dataframe(sector_exp, use_container_width=True)
-        with s2:
-            chart_barh(sector_exp.rename(columns={"Sector":"Column"}), "Column", "Weight (%)", "Top sectors by weight", top_n=12)
-
-        extra_sheets["Sector Exposure"] = sector_exp
-
-    # Top cross-qualifiers by (Membership Count, weight)
-    if "Membership Count" in found_rows.columns:
-        top_cross = found_rows.sort_values(["Membership Count", "Weight (%)"], ascending=[False, False]).head(15)
-        keep_cols = [c for c in ["Input", "Matched Symbol", "Sector", "Weight (%)", "Membership Count", "Membership Columns"] if c in top_cross.columns]
-        st.subheader("Top cross-qualifiers (mapped holdings)")
-        st.dataframe(top_cross[keep_cols], use_container_width=True)
-        extra_sheets["Top Cross-Qualifiers"] = top_cross[keep_cols]
-
-    # Unmapped list
-    unmapped = weights.loc[~weights["Mapped?"]].sort_values("Weight (%)", ascending=False)
-    st.subheader("Unmapped tickers (not found in base file)")
-    st.dataframe(unmapped, use_container_width=True, hide_index=True)
-    extra_sheets["Unmapped (Portfolio)"] = unmapped
-
-# -----------------------------
-# Downloads
-# -----------------------------
-st.divider()
-st.subheader("Download")
-
 csv_bytes = long_results.to_csv(index=False).encode("utf-8")
-st.download_button("Download results (CSV)", data=csv_bytes, file_name="cross_qualifying_results.csv", mime="text/csv")
+st.download_button("Download CSV", csv_bytes, "results.csv")
 
-xlsx_bytes = to_excel_bytes(long_results, matrix_view)
-xlsx_bytes = to_excel_bytes(long_results, matrix_view, extra_sheets=extra_sheets if extra_sheets else None)
-st.download_button("Download results (Excel)", data=xlsx_bytes, file_name="cross_qualifying_results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+xlsx_bytes = to_excel_bytes(long_results, matrix)
+st.download_button(
+    "Download Excel",
+    xlsx_bytes,
+    "results.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
