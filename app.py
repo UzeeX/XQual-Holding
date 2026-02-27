@@ -1,7 +1,7 @@
 import re
 from io import BytesIO
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -101,7 +101,7 @@ def clean_weight_series(s: pd.Series) -> pd.Series:
 
 
 # ============================================================
-# MATCHING ENGINE
+# MATCHING ENGINE (PROFESSIONAL VERSION)
 # ============================================================
 
 def find_memberships(
@@ -123,25 +123,36 @@ def find_memberships(
 
     for input_key in wanted:
         matches = df_indexed[df_indexed[key_col] == input_key]
-        found = not matches.empty
-
         matrix_rows[input_key] = {}
 
-        if found:
+        if not matches.empty:
+
             for _, r in matches.iterrows():
+
                 memberships = []
+
                 for c in qualifier_cols:
                     v = r.get(c, None)
+
                     if pd.notna(v) and str(v).strip() != "":
-                        memberships.append(c)
-                        matrix_rows[input_key][c] = 1
+                        memberships.append((c, v))
+
+                        try:
+                            val = float(v)
+                        except:
+                            val = 1
+
+                        if c in matrix_rows[input_key]:
+                            matrix_rows[input_key][c] = min(matrix_rows[input_key][c], val)
+                        else:
+                            matrix_rows[input_key][c] = val
 
                 long_rows.append({
                     "Input": input_key,
                     "Matched Symbol": r.get("Symbol", ""),
                     "Found?": True,
                     "Membership Count": len(memberships),
-                    "Membership Columns": ", ".join(memberships)
+                    "Membership Columns": ", ".join([m[0] for m in memberships])
                 })
         else:
             long_rows.append({
@@ -178,17 +189,15 @@ def to_excel_bytes(results_df, matrix_df, extra_sheets=None) -> bytes:
 
 
 # ============================================================
-# CHARTS
+# CHART
 # ============================================================
 
 def chart_pie(values, labels, title):
     fig, ax = plt.subplots(figsize=(5, 4))
-
     if sum(values) == 0:
         ax.text(0.5, 0.5, "No Data", ha="center", va="center")
     else:
         ax.pie(values, labels=labels, autopct="%1.1f%%", startangle=90)
-
     ax.set_title(title)
     st.pyplot(fig, clear_figure=True)
 
@@ -202,16 +211,13 @@ st.title("Cross-Qualifying Ticker Finder")
 with st.sidebar:
     st.header("Base File")
     base_upload = st.file_uploader("Upload base file", type=["csv", "xlsx", "xls"])
-    base_path = st.text_input("Or use local path", value="Cross Qualifying Stocks.csv")
+    base_path = st.text_input("Or local path", value="Cross Qualifying Stocks.csv")
 
     st.divider()
 
     mode = st.radio("Mode", ["Ticker list", "Portfolio (with weights)"])
-
-    st.divider()
-
     match_mode = st.radio("Match using", ["Ticker", "Exact Symbol"])
-    show_only_found = st.toggle("Show only found tickers", value=False)
+    show_only_found = st.toggle("Show only found", False)
 
 # Load base
 base_df = load_base(base_path, base_upload)
@@ -222,7 +228,6 @@ qualifier_cols = get_qualifier_cols(base_df, meta_cols)
 
 ticker_keys = []
 portfolio_df = None
-weight_col = None
 
 if mode == "Ticker list":
     manual = st.text_area("Paste tickers")
@@ -261,19 +266,20 @@ if show_only_found:
 st.subheader("Results")
 st.dataframe(long_results, use_container_width=True)
 
+st.subheader("Matrix (Comparison View)")
+st.dataframe(matrix, use_container_width=True)
+
 st.subheader("Summary by Column")
 if not matrix.empty:
-    summary = matrix.sum().sort_values(ascending=False).rename("Count")
-    st.dataframe(summary.to_frame(), use_container_width=True)
-
-st.subheader("Matrix")
-st.dataframe(matrix, use_container_width=True)
+    summary = (matrix > 0).sum().sort_values(ascending=False)
+    st.dataframe(summary.rename("Count").to_frame(), use_container_width=True)
 
 # ============================================================
 # DOWNLOAD
 # ============================================================
 
 st.divider()
+
 csv_bytes = long_results.to_csv(index=False).encode("utf-8")
 st.download_button("Download CSV", csv_bytes, "results.csv")
 
